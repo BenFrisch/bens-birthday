@@ -139,3 +139,17 @@
 
 
 @media(max-width:760px){#mapInfoCard{top:auto;bottom:14px;right:12px;left:12px;width:auto;max-height:32vh}#backToGlobe{top:14px;left:12px}#mapTitle{top:14px;max-width:58vw;font-size:12px}#detailMapStage .leaflet-control-zoom{margin-top:64px}}
+
+body.auth-required>*:not(#authGate){display:none!important}
+#authGate{display:none;position:fixed;inset:0;z-index:1000000;align-items:center;justify-content:center;padding:20px;background:#020914;color:#fff;font-family:Inter,Arial,sans-serif}
+body.auth-required #authGate{display:flex}
+.authCard{width:min(420px,100%);padding:26px;background:#07111e;border:1px solid #ffffff33;border-radius:18px;box-shadow:0 16px 50px #0009}
+.authCard h1{margin:0 0 8px;font-size:26px}.authCard p{color:#c5d4e4;line-height:1.5}
+.authCard label{display:block;margin:14px 0 6px;font-weight:700}
+.authCard input{width:100%;padding:11px;border:1px solid #ffffff44;border-radius:9px;background:#0c1a2d;color:#fff}
+.authCard button{width:100%;margin-top:18px}
+#authMessage{min-height:1.5em;margin-top:10px;color:#ffd27a}
+#cloudStatus{position:fixed;z-index:1000;right:10px;top:10px;display:none;align-items:center;gap:8px;padding:7px 9px;background:#07111eeb;border:1px solid #ffffff30;border-radius:12px;color:#fff;font:12px Inter,Arial,sans-serif}
+body:not(.auth-required) #cloudStatus{display:flex}
+#cloudStatus button{padding:6px 9px;font-size:11px}
+@media(max-width:760px){#cloudStatus{left:8px;right:8px;top:8px;justify-content:center;flex-wrap:wrap}#cloudStatus button{padding:5px 7px}}
