@@ -43,6 +43,22 @@ function setAuthMessage(message,isError=false){
 
 function storageReference(path){return `supabase-storage:${path}`}
 
+function mapNestedValues(value,mapLeaf){
+  const copies=new WeakMap();
+  const visit=item=>{
+    const mapped=mapLeaf(item);
+    if(mapped!==item)return mapped;
+    if(!item||typeof item!=='object')return item;
+    if(copies.has(item))return copies.get(item);
+    const copy=Array.isArray(item)?[]:{};
+    copies.set(item,copy);
+    if(Array.isArray(item))item.forEach(child=>copy.push(visit(child)));
+    else Object.entries(item).forEach(([key,child])=>{copy[key]=visit(child)});
+    return copy;
+  };
+  return visit(value);
+}
+
 function localStateSnapshot(){
   const parse=(key,fallback)=>{const raw=localStorage.getItem(key);return raw===null?fallback:JSON.parse(raw)};
   return {
@@ -169,28 +185,25 @@ async function signPhotoPaths(paths){
 }
 
 async function hydrateCloudState(state){
-  const mapped=value=>{
+  const hydrated=mapNestedValues(state,value=>{
     if(typeof value==='string'&&cloudAssetMappings[value])return storageReference(cloudAssetMappings[value]);
-    if(Array.isArray(value))return value.map(mapped);
-    if(value&&typeof value==='object')return Object.fromEntries(Object.entries(value).map(([key,item])=>[key,mapped(item)]));
     return value;
-  };
-  const hydrated=mapped(state);
+  });
   const paths=new Set();
+  const seen=new WeakSet();
   const collect=value=>{
     if(typeof value==='string'&&value.startsWith('supabase-storage:'))paths.add(value.slice('supabase-storage:'.length));
-    else if(Array.isArray(value))value.forEach(collect);
-    else if(value&&typeof value==='object')Object.values(value).forEach(collect);
+    else if(value&&typeof value==='object'&&!seen.has(value)){
+      seen.add(value);
+      Object.values(value).forEach(collect);
+    }
   };
   collect(hydrated);
   await signPhotoPaths([...paths]);
-  const resolve=value=>{
+  return mapNestedValues(hydrated,value=>{
     if(typeof value==='string'&&value.startsWith('supabase-storage:'))return signedPhotoUrls.get(value.slice('supabase-storage:'.length))||value;
-    if(Array.isArray(value))return value.map(resolve);
-    if(value&&typeof value==='object')return Object.fromEntries(Object.entries(value).map(([key,item])=>[key,resolve(item)]));
     return value;
-  };
-  return resolve(hydrated);
+  });
 }
 
 async function readCloudState(){
@@ -241,12 +254,10 @@ async function refreshBundledPhotoUrls(){
       const path=cloudAssetMappings[value]||signedPhotoPaths.get(value);
       return path?storageReference(path):value;
     }
-    if(Array.isArray(value))return value.map(toStorageReference);
-    if(value&&typeof value==='object')return Object.fromEntries(Object.entries(value).map(([key,item])=>[key,toStorageReference(item)]));
     return value;
   };
-  ALL=await hydrateCloudState(toStorageReference(ALL));
-  const refreshed=await hydrateCloudState(toStorageReference(BASE_ALL));
+  ALL=await hydrateCloudState(mapNestedValues(ALL,toStorageReference));
+  const refreshed=await hydrateCloudState(mapNestedValues(BASE_ALL,toStorageReference));
   BASE_ALL.splice(0,BASE_ALL.length,...refreshed);
 }
 
