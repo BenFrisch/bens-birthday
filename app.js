@@ -324,12 +324,17 @@ async function signOutFamily(){
 
 function bundledPhotoPaths(){
   const paths=new Set();
-  const scan=value=>{
-    if(typeof value==='string'&&/^assets\/images\/.*\.(?:jpe?g|webp)$/i.test(value))paths.add(value);
-    else if(Array.isArray(value))value.forEach(scan);
-    else if(value&&typeof value==='object')Object.values(value).forEach(scan);
-  };
-  [...ALL,...BASE_ALL].forEach(scan);
+  const seen=new WeakSet();
+  const pending=[...ALL,...BASE_ALL];
+  while(pending.length){
+    const value=pending.pop();
+    if(typeof value==='string'){
+      if(/^assets\/images\/.*\.(?:jpe?g|webp)$/i.test(value))paths.add(value);
+    }else if(value&&typeof value==='object'&&!seen.has(value)){
+      seen.add(value);
+      pending.push(...Object.values(value));
+    }
+  }
   return paths;
 }
 
