@@ -984,20 +984,20 @@ function openActiveDestinationMap(){
   const photo=activePhotoGallery[activePhotoIndex];
   const photoLat=Number(photo?.gps?.[0]),photoLng=Number(photo?.gps?.[1]);
   const hasPhotoGps=Number.isFinite(photoLat)&&Number.isFinite(photoLng)&&Math.abs(photoLat)<=90&&Math.abs(photoLng)<=180;
-  openDetailedMap(d,hasPhotoGps?[photoLat,photoLng]:[d.lat,d.lng]);
+  openDetailedMap(d,hasPhotoGps?[photoLat,photoLng]:[d.lat,d.lng],hasPhotoGps);
 }
 function exploreMap(name,country,year){
   const d=findPlaceKey(name,country,year);
   if(d) openDetailedMap(d);
 }
-function openDetailedMap(d,coordinates=[d.lat,d.lng]){
+function openDetailedMap(d,coordinates=[d.lat,d.lng],photoLocation=false){
   const [latitude,longitude]=coordinates;
   activeDestination=d;
   if(globe) globe.controls().autoRotate=false;
   const stage=document.getElementById('detailMapStage');
   const panel=document.getElementById('panel');
   if(panel) panel.style.display='none';
-  document.getElementById('mapTitle').textContent=d.name+' — detailed street map';
+  document.getElementById('mapTitle').textContent=d.name+(photoLocation?' — photo location':' — detailed street map');
   stage.style.display='block';
   showMapInfo(d);
   setTimeout(()=>{
@@ -1011,7 +1011,13 @@ function openDetailedMap(d,coordinates=[d.lat,d.lng]){
         map.setView([latitude,longitude],14,{animate:false});
       }
       if(marker) marker.remove();
-      marker=L.marker([latitude,longitude]).addTo(map).bindPopup(d.name).openPopup();
+      if(photoLocation){
+        const icon=L.divIcon({className:'',html:'<div class="v22MapPin"></div>',iconSize:[17,17],iconAnchor:[8,8]});
+        marker=L.marker([latitude,longitude],{icon,keyboard:true,title:d.name+' photo location'}).addTo(map)
+          .bindPopup(d.name+' photo location').openPopup();
+      }else{
+        marker=L.marker([latitude,longitude]).addTo(map).bindPopup(d.name).openPopup();
+      }
       map.invalidateSize(true);
       setTimeout(()=>map.invalidateSize(true),300);
     }catch(err){
@@ -1580,8 +1586,8 @@ function finalizeBaseRecords(){
   };
 
   const originalOpenDetailedMap=window.openDetailedMap;
-  window.openDetailedMap=function(d){
-    originalOpenDetailedMap(d);
+  window.openDetailedMap=function(d,coordinates,photoLocation=false){
+    originalOpenDetailedMap(d,coordinates,photoLocation);
     // Original map is initialized asynchronously; add the complete travel layer afterward.
     setTimeout(()=>v22AddDestinationMarkers(d),450);
     setTimeout(()=>v22AddDestinationMarkers(d),900);
