@@ -48,7 +48,15 @@ function storageReference(path){return `supabase-storage:${path}`}
 function photoStoragePath(value){
   if(typeof value!=='string')return '';
   if(value.startsWith('supabase-storage:'))return value.slice('supabase-storage:'.length);
-  return signedPhotoPaths.get(value)||cloudAssetMappings[value]||'';
+  const knownPath=signedPhotoPaths.get(value)||cloudAssetMappings[value];
+  if(knownPath)return knownPath;
+  try{
+    const url=new URL(value);
+    const match=url.pathname.match(/\/storage\/v1\/object\/(?:sign|public)\/family-photos\/(.+)$/);
+    return match?decodeURIComponent(match[1]):'';
+  }catch{
+    return '';
+  }
 }
 
 function withoutDeletedPhotoReferences(value,copies=new WeakMap()){
@@ -859,15 +867,16 @@ function strictDestinationPhotos(d){
   const out=[], seen=new Set();
   const add=(src,p={})=>{
     if(!src||deletedPhotoPaths.has(photoStoragePath(src)))return;
+    const identity=photoStoragePath(src)||src;
     const latitude=Number(p.gps?.[0]),longitude=Number(p.gps?.[1]);
     const gps=Number.isFinite(latitude)&&Number.isFinite(longitude)&&Math.abs(latitude)<=90&&Math.abs(longitude)<=180
       ?[latitude,longitude]:null;
-    if(seen.has(src)){
-      const existing=out.find(photo=>photo.src===src);
+    if(seen.has(identity)){
+      const existing=out.find(photo=>(photoStoragePath(photo.src)||photo.src)===identity);
       if(existing&&!existing.gps&&gps)existing.gps=gps;
       return;
     }
-    seen.add(src);
+    seen.add(identity);
     out.push({src,place:d.name,country:d.country,date:p.date||d.date||'',trip:(tripForDestination(d)?.name||d.note||d.name),gps});
   };
   (Array.isArray(d.photos)?d.photos:[]).forEach(p=>add(p?.src,p||{}));
@@ -876,6 +885,9 @@ function strictDestinationPhotos(d){
   // Exact duplicate destination records only; never same-country or same-trip siblings.
   ALL.filter(x=>x!==d && String(x.name||'').trim().toLowerCase()===String(d.name||'').trim().toLowerCase() && String(x.country||'').trim().toLowerCase()===String(d.country||'').trim().toLowerCase())
      .forEach(x=>{ (Array.isArray(x.photos)?x.photos:[]).forEach(p=>add(p?.src,p||{})); add(x.photo||'',x.photoMetadata||{date:x.date}); });
+  const preferred=countryDefaultPhoto(d.country,out);
+  const preferredIndex=preferred?out.indexOf(preferred):-1;
+  if(preferredIndex>0)out.unshift(out.splice(preferredIndex,1)[0]);
   return out;
 }
 getRelatedPhotos = strictDestinationPhotos;
@@ -916,10 +928,10 @@ function countryDefaultPhotoReference(photo){
 function countryDefaultPhoto(country,photos=photosForCountry(country)){
   const saved=loadCountryRegistry().find(item=>normCountry(item.name)===normCountry(country))?.defaultPhoto;
   if(!saved)return null;
-  const savedPath=saved.startsWith('supabase-storage:')?saved.slice('supabase-storage:'.length):null;
+  const savedPath=photoStoragePath(saved);
   return photos.find(photo=>{
     if(photo.src===saved)return true;
-    if(savedPath)return signedPhotoPaths.get(photo.src)===savedPath||photo.src===storageReference(savedPath);
+    if(savedPath)return photoStoragePath(photo.src)===savedPath;
     return false;
   })||null;
 }
