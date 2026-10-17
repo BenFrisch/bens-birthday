@@ -16,12 +16,14 @@ const FAMILY_STATE_TABLE='family_app_state';
 const COUNTRY_KEY='bensWorldCountryRegistry';
 const TRIP_KEY='bensWorldAddedTripsV2';
 const OVERRIDE_KEY='bensWorldBaseOverridesV1';
+const DELETED_PHOTO_KEY='bensWorldDeletedPhotoPathsV1';
 const SIGNED_URL_TTL=60*60;
 const cloudDeviceId=crypto.randomUUID();
 let supabaseClient=null;
 let familyUser=null;
 let cloudReady=false;
 let cloudAssetMappings={};
+let deletedPhotoPaths=new Set();
 let cloudSyncTimer=null;
 let cloudSyncQueue=Promise.resolve();
 let cloudBootedUserId='';
@@ -42,6 +44,36 @@ function setAuthMessage(message,isError=false){
 }
 
 function storageReference(path){return `supabase-storage:${path}`}
+
+function photoStoragePath(value){
+  if(typeof value!=='string')return '';
+  if(value.startsWith('supabase-storage:'))return value.slice('supabase-storage:'.length);
+  return signedPhotoPaths.get(value)||cloudAssetMappings[value]||'';
+}
+
+function withoutDeletedPhotoReferences(value,copies=new WeakMap()){
+  if(typeof value==='string')return deletedPhotoPaths.has(photoStoragePath(value))?undefined:value;
+  if(!value||typeof value!=='object')return value;
+  if(copies.has(value))return copies.get(value);
+  if(!Array.isArray(value)&&(typeof value.src==='string'||typeof value.data==='string')
+    &&[value.src,value.data].some(reference=>deletedPhotoPaths.has(photoStoragePath(reference))))return undefined;
+  const copy=Array.isArray(value)?[]:{};
+  copies.set(value,copy);
+  if(Array.isArray(value)){
+    value.forEach(item=>{
+      const cleaned=withoutDeletedPhotoReferences(item,copies);
+      if(cleaned!==undefined)copy.push(cleaned);
+    });
+  }else{
+    Object.entries(value).forEach(([key,item])=>{
+      const path=typeof item==='string'?photoStoragePath(item):'';
+      if(key==='defaultPhoto'&&deletedPhotoPaths.has(path))return;
+      const cleaned=withoutDeletedPhotoReferences(item,copies);
+      if(cleaned!==undefined)copy[key]=cleaned;
+    });
+  }
+  return copy;
+}
 
 function mapNestedValues(value,mapLeaf){
   const copies=new WeakMap();
@@ -65,7 +97,8 @@ function localStateSnapshot(){
     countries:parse(COUNTRY_KEY,loadCountryRegistry()),
     trips:parse(TRIP_KEY,[]),
     overrides:parse(OVERRIDE_KEY,{}),
-    assetMappings:cloudAssetMappings
+    assetMappings:cloudAssetMappings,
+    deletedPhotoPaths:[...deletedPhotoPaths]
   };
 }
 
@@ -73,7 +106,9 @@ function writeLocalState(state){
   localStorage.setItem(COUNTRY_KEY,JSON.stringify(state.countries||[]));
   localStorage.setItem(TRIP_KEY,JSON.stringify(state.trips||[]));
   localStorage.setItem(OVERRIDE_KEY,JSON.stringify(state.overrides||{}));
+  localStorage.setItem(DELETED_PHOTO_KEY,JSON.stringify(state.deletedPhotoPaths||[]));
   cloudAssetMappings=state.assetMappings||{};
+  deletedPhotoPaths=new Set(state.deletedPhotoPaths||[]);
 }
 
 async function createWebp(blob){
@@ -227,7 +262,8 @@ async function signPhotoPaths(paths){
 }
 
 async function hydrateCloudState(state){
-  const hydrated=mapNestedValues(state,value=>{
+  const clean=withoutDeletedPhotoReferences(state);
+  const hydrated=mapNestedValues(clean,value=>{
     if(typeof value==='string'&&cloudAssetMappings[value])return storageReference(cloudAssetMappings[value]);
     return value;
   });
@@ -280,13 +316,17 @@ function flushCloudState(){
 }
 
 async function applyCloudSnapshot(state){
+  deletedPhotoPaths=new Set(state.deletedPhotoPaths||[]);
   cloudAssetMappings=state.assetMappings||{};
-  const hydrated=await hydrateCloudState({
+  const clean=withoutDeletedPhotoReferences({
     countries:state.countries||loadCountryRegistry(),
     trips:state.trips||[],
     overrides:state.overrides||{},
-    assetMappings:state.assetMappings||{}
+    assetMappings:state.assetMappings||{},
+    deletedPhotoPaths:[...deletedPhotoPaths]
   });
+  cloudAssetMappings=clean.assetMappings||{};
+  const hydrated=await hydrateCloudState(clean);
   writeLocalState(hydrated);
 }
 
@@ -298,8 +338,8 @@ async function refreshBundledPhotoUrls(){
     }
     return value;
   };
-  ALL=await hydrateCloudState(mapNestedValues(ALL,toStorageReference));
-  const refreshed=await hydrateCloudState(mapNestedValues(BASE_ALL,toStorageReference));
+  ALL=withoutDeletedPhotoReferences(await hydrateCloudState(mapNestedValues(ALL,toStorageReference)));
+  const refreshed=withoutDeletedPhotoReferences(await hydrateCloudState(mapNestedValues(BASE_ALL,toStorageReference)));
   BASE_ALL.splice(0,BASE_ALL.length,...refreshed);
 }
 
@@ -699,9 +739,60 @@ function openPhotoLightbox(index){
     ?`<div class="note">Photo GPS: ${latitude.toFixed(6)}, ${longitude.toFixed(6)}</div><a class="streetViewLink" href="https://www.google.com/maps/@?api=1&amp;map_action=pano&amp;viewpoint=${latitude},${longitude}" target="_blank" rel="noopener noreferrer">Open photo location in Street View</a>`
     :'';
   const country=activeDestination?.country||p.country||'';
-  const countryAction=country?`<div class="countryPhotoAction"><button type="button" onclick="setCountryDefaultPhoto(${activePhotoIndex})">Set as ${escHtml(country)} default photo</button><span id="countryPhotoSaveStatus" role="status" aria-live="polite"></span></div>`:'';
+  const deleteDisabled=photoStoragePath(p.src)?'':' disabled title="Only private family-album photos can be deleted here."';
+  const countryAction=country?`<div class="countryPhotoAction"><button type="button" onclick="setCountryDefaultPhoto(${activePhotoIndex})">Set as ${escHtml(country)} default photo</button><button type="button" class="deletePhotoButton" onclick="showPhotoDeleteConfirmation(${activePhotoIndex})"${deleteDisabled}>Delete photo</button><span id="countryPhotoSaveStatus" role="status" aria-live="polite"></span><div id="photoDeleteConfirmation" class="photoDeleteConfirmation" hidden><span>Are you sure? This permanently deletes the photo from the family album.</span><button type="button" onclick="deleteSelectedPhoto(${activePhotoIndex})">Yes</button><button type="button" onclick="cancelPhotoDelete()">Cancel</button></div></div>`:'';
   document.getElementById('photoLightboxMeta').innerHTML=`<b>${escHtml(p.place)}</b> <span class="badge">${activePhotoIndex+1} / ${activePhotoGallery.length}</span><div>${escHtml(p.country||'')}${p.date?' · '+escHtml(p.date):''}</div>${p.trip?`<div class="note">Trip: ${escHtml(p.trip)}</div>`:''}${gps}${countryAction}`;
   document.getElementById('photoLightbox').classList.add('open');
+}
+function showPhotoDeleteConfirmation(){
+  const confirmation=document.getElementById('photoDeleteConfirmation');
+  if(confirmation)confirmation.hidden=false;
+}
+function cancelPhotoDelete(){
+  const confirmation=document.getElementById('photoDeleteConfirmation');
+  if(confirmation)confirmation.hidden=true;
+}
+async function deleteSelectedPhoto(index){
+  const photo=activePhotoGallery[index],path=photo?photoStoragePath(photo.src):'';
+  const status=document.getElementById('countryPhotoSaveStatus');
+  const button=document.querySelector('#photoDeleteConfirmation button[onclick^="deleteSelectedPhoto"]');
+  if(!path||!photo||!status||!button)return;
+  if(!cloudReady||!familyUser){
+    status.textContent='Sign in and connect to the family album before deleting photos.';
+    return;
+  }
+  if(!path.startsWith(`${familyUser.id}/`)){
+    status.textContent='This photo is not in your family account’s private storage and cannot be deleted here.';
+    return;
+  }
+  const previous=localStateSnapshot();
+  button.disabled=true;
+  status.textContent='Removing photo references…';
+  deletedPhotoPaths.add(path);
+  writeLocalState(withoutDeletedPhotoReferences({...previous,deletedPhotoPaths:[...deletedPhotoPaths]}));
+  try{
+    await flushCloudState();
+    status.textContent='Deleting photo from private storage…';
+    const {error}=await supabaseClient.storage.from(PHOTO_BUCKET).remove([path]);
+    if(error)throw new Error(error.message);
+  }catch(error){
+    writeLocalState(previous);
+    try{
+      await flushCloudState();
+      status.textContent=`Photo was not deleted. Changes were restored. ${error.message}`;
+    }catch(rollbackError){
+      status.textContent=`Deletion failed (${error.message}), and restoring the album state also failed (${rollbackError.message}). Reload and check the family album before trying again.`;
+    }
+    button.disabled=false;
+    return;
+  }
+  signedPhotoUrls.delete(path);
+  closePhotoLightbox();
+  rebuildMaster();
+  const old=activeDestination;
+  const updated=old?ALL.find(record=>record._baseId===old._baseId&&old._baseId)
+    ||findPlaceKey(old.name,old.country,old.year):null;
+  if(updated)renderDestinationCard(updated);
 }
 async function setCountryDefaultPhoto(index){
   const photo=activePhotoGallery[index],country=String(activeDestination?.country||photo?.country||'').trim();
@@ -715,7 +806,7 @@ async function setCountryDefaultPhoto(index){
     const registry=loadCountryRegistry();
     const entry=registry.find(item=>normCountry(item.name)===normCountry(country));
     if(!entry)throw new Error(`Could not find ${country} in the country registry.`);
-    entry.defaultPhoto=photo.src;
+    entry.defaultPhoto=countryDefaultPhotoReference(photo);
     saveCountryRegistry(registry);
     if(!cloudReady||!familyUser)throw new Error('The family album is not connected.');
     await flushCloudState();
@@ -767,7 +858,7 @@ function destinationPhotos(d){ return getRelatedPhotos(d); }
 function strictDestinationPhotos(d){
   const out=[], seen=new Set();
   const add=(src,p={})=>{
-    if(!src)return;
+    if(!src||deletedPhotoPaths.has(photoStoragePath(src)))return;
     const latitude=Number(p.gps?.[0]),longitude=Number(p.gps?.[1]);
     const gps=Number.isFinite(latitude)&&Number.isFinite(longitude)&&Math.abs(latitude)<=90&&Math.abs(longitude)<=180
       ?[latitude,longitude]:null;
@@ -804,7 +895,7 @@ function pickPhotoThumbnail(photos,fallback=null){
 function photosForCountry(country){
   const photos=[],seen=new Set();
   const add=src=>{
-    if(src&&!seen.has(src)){seen.add(src);photos.push({src})}
+    if(src&&!deletedPhotoPaths.has(photoStoragePath(src))&&!seen.has(src)){seen.add(src);photos.push({src})}
   };
   ALL.filter(destination=>normCountry(destination.country)===normCountry(country)).forEach(destination=>{
     (destination.photos||[]).forEach(photo=>add(photo?.src));
@@ -818,16 +909,28 @@ function photosForCountry(country){
     .forEach(trip=>(trip.photos||[]).forEach(photo=>add(photo.data||photo.src)));
   return photos;
 }
+function countryDefaultPhotoReference(photo){
+  const path=photoStoragePath(photo.src);
+  return path?storageReference(path):photo.src;
+}
+function countryDefaultPhoto(country,photos=photosForCountry(country)){
+  const saved=loadCountryRegistry().find(item=>normCountry(item.name)===normCountry(country))?.defaultPhoto;
+  if(!saved)return null;
+  const savedPath=saved.startsWith('supabase-storage:')?saved.slice('supabase-storage:'.length):null;
+  return photos.find(photo=>{
+    if(photo.src===saved)return true;
+    if(savedPath)return signedPhotoPaths.get(photo.src)===savedPath||photo.src===storageReference(savedPath);
+    return false;
+  })||null;
+}
 function countryPhotoThumbnailHtml(country){
-  const defaultPhoto=loadCountryRegistry().find(item=>normCountry(item.name)===normCountry(country))?.defaultPhoto;
-  if(defaultPhoto)return `<img class="photoRowThumbnail" src="${escHtml(defaultPhoto)}" alt="" loading="lazy" decoding="async">`;
   const photos=photosForCountry(country);
-  const photo=pickPhotoThumbnail(photos,firstUploadedPhotoForCountry(country));
+  const photo=countryDefaultPhoto(country,photos)||pickPhotoThumbnail(photos,firstUploadedPhotoForCountry(country));
   return photo?`<img class="photoRowThumbnail" src="${escHtml(photo.src)}" alt="" loading="lazy" decoding="async">`:'';
 }
 function tripPhotoThumbnailHtml(trip){
   const photos=[];
-  (trip.photos||[]).forEach(photo=>{if(photo?.data||photo?.src)photos.push({src:photo.data||photo.src})});
+  (trip.photos||[]).forEach(photo=>{const src=photo?.data||photo?.src;if(src&&!deletedPhotoPaths.has(photoStoragePath(src)))photos.push({src})});
   (trip.destinations||[]).forEach(name=>{
     const destination=ALL.find(record=>record.name===name);
     if(destination)getRelatedPhotos(destination).forEach(photo=>photos.push(photo));
@@ -938,7 +1041,7 @@ function tripToDestination(t){
 function rebuildMaster(){
   const ov=loadOverrides();
   const base=BASE_ALL.map(d=>{
-    const record={...d,...(ov[d._baseId]||{})};
+    const record=withoutDeletedPhotoReferences({...d,...(ov[d._baseId]||{})});
     delete record.heroStatus;
     delete record.heroSource;
     delete record.benVisibleEstablished;

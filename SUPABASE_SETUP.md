@@ -24,6 +24,7 @@ Once you have verified the album on a second device, remove the old `.jpg` desti
 - The project uses one shared account, so every family member has the same permissions. Keep sign-ups disabled.
 - Trip edits are synced through one shared JSON document. Avoid editing simultaneously on multiple devices; the most recent save replaces the shared document.
 - Photos are stored as private WebP display copies, not originals. Keep the originals in Google Photos or another archive.
+- The full-size photo viewer can permanently delete a private album photo after confirmation. Deletion removes all album references and its private Storage object; this cannot be undone.
 - Trip and country thumbnails are picked from their available photos; trip thumbnails fall back to a photo from the trip's country when the trip has none. Open a photo full-size and choose “Set as [country] default photo” to make it the country thumbnail instead of a random choice.
 - Signed image links expire and are refreshed while the page remains open. Reload the page if an image link expires after a long inactive period.
 - Review Supabase's current Free-plan database, file-storage, and monthly egress quotas as the album grows.
