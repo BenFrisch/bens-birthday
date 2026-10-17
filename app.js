@@ -104,20 +104,61 @@ async function createWebp(blob){
 async function readPhotoMetadata(blob){
   if(!window.exifr?.parse)return {};
   try{
-    const result=await window.exifr.parse(blob);
+    const result=await window.exifr.parse(blob,{gps:true});
     if(!result)return {};
     const captured=result.DateTimeOriginal||result.CreateDate||result.ModifyDate||null;
     const date=captured instanceof Date&&!Number.isNaN(captured.getTime())
       ?`${captured.getFullYear()}-${String(captured.getMonth()+1).padStart(2,'0')}-${String(captured.getDate()).padStart(2,'0')} ${String(captured.getHours()).padStart(2,'0')}:${String(captured.getMinutes()).padStart(2,'0')}:${String(captured.getSeconds()).padStart(2,'0')}`
       :captured?String(captured):'';
     const latitude=Number(result.latitude),longitude=Number(result.longitude);
-    const gps=Number.isFinite(latitude)&&Number.isFinite(longitude)?[latitude,longitude]:null;
+    const gps=Number.isFinite(latitude)&&Number.isFinite(longitude)&&Math.abs(latitude)<=90&&Math.abs(longitude)<=180
+      ?[latitude,longitude]:null;
     return {date,gps};
   }catch(error){
     console.warn('Photo EXIF metadata could not be read; the image will still be uploaded.',error);
     return {};
   }
 }
+
+let photoGpsResolver=null;
+
+function requestPhotoGps(filename){
+  if(photoGpsResolver)throw new Error('Finish entering coordinates for the current photo first.');
+  const dialog=document.getElementById('photoGpsBack');
+  const latitude=document.getElementById('photoGpsLatitude');
+  const longitude=document.getElementById('photoGpsLongitude');
+  document.getElementById('photoGpsPrompt').textContent=`No GPS coordinates were found for ${filename}. Add its location, or skip to continue without coordinates.`;
+  document.getElementById('photoGpsMessage').textContent='';
+  latitude.value='';
+  longitude.value='';
+  dialog.style.display='flex';
+  setTimeout(()=>latitude.focus(),0);
+  return new Promise(resolve=>{photoGpsResolver=resolve});
+}
+
+function finishPhotoGps(gps){
+  if(!photoGpsResolver)return;
+  const resolve=photoGpsResolver;
+  photoGpsResolver=null;
+  document.getElementById('photoGpsBack').style.display='none';
+  resolve(gps);
+}
+
+function submitPhotoGps(event){
+  event.preventDefault();
+  const message=document.getElementById('photoGpsMessage');
+  const latitudeText=document.getElementById('photoGpsLatitude').value.trim();
+  const longitudeText=document.getElementById('photoGpsLongitude').value.trim();
+  const latitude=Number(latitudeText),longitude=Number(longitudeText);
+  if(!latitudeText||!longitudeText||!Number.isFinite(latitude)||!Number.isFinite(longitude)
+    ||Math.abs(latitude)>90||Math.abs(longitude)>180){
+    message.textContent='Enter a valid latitude from −90 to 90 and longitude from −180 to 180.';
+    return;
+  }
+  finishPhotoGps([latitude,longitude]);
+}
+
+function skipPhotoGps(){finishPhotoGps(null)}
 
 async function uploadWebp(blob,filename){
   if(!familyUser)throw new Error('Sign in before uploading photos.');
@@ -139,9 +180,10 @@ async function uploadWebp(blob,filename){
 
 async function processAndUploadPhoto(file){
   const metadata=await readPhotoMetadata(file);
+  const gps=metadata.gps||await requestPhotoGps(file.name);
   const webp=await createWebp(file);
   const uploaded=await uploadWebp(webp,file.name);
-  return {name:file.name,data:uploaded.url,storagePath:uploaded.path,date:metadata.date||'',gps:metadata.gps};
+  return {name:file.name,data:uploaded.url,storagePath:uploaded.path,date:metadata.date||'',gps};
 }
 
 async function uploadDataUrl(dataUrl){
@@ -685,7 +727,11 @@ function stepDestinationPhoto(n){setDestinationPhoto(activePhotoIndex+n)}
 function openPhotoLightbox(index){
   if(!activePhotoGallery.length)return;activePhotoIndex=Math.max(0,Math.min(index,activePhotoGallery.length-1));
   const p=activePhotoGallery[activePhotoIndex];document.getElementById('photoLightboxImg').src=p.src;
-  const gps=p.gps?`<div class="note">Map location: ${Number(p.gps[0]).toFixed(4)}, ${Number(p.gps[1]).toFixed(4)}</div>`:'';
+  const latitude=Number(p.gps?.[0]),longitude=Number(p.gps?.[1]);
+  const hasGps=Number.isFinite(latitude)&&Number.isFinite(longitude)&&Math.abs(latitude)<=90&&Math.abs(longitude)<=180;
+  const gps=hasGps
+    ?`<div class="note">Photo GPS: ${latitude.toFixed(6)}, ${longitude.toFixed(6)}</div><a class="streetViewLink" href="https://www.google.com/maps/@?api=1&amp;map_action=pano&amp;viewpoint=${latitude},${longitude}" target="_blank" rel="noopener noreferrer">Open photo location in Street View</a>`
+    :'';
   document.getElementById('photoLightboxMeta').innerHTML=`<b>${escHtml(p.place)}</b> <span class="badge">${activePhotoIndex+1} / ${activePhotoGallery.length}</span><div>${escHtml(p.country||'')}${p.date?' · '+escHtml(p.date):''}</div>${p.trip?`<div class="note">Trip: ${escHtml(p.trip)}</div>`:''}${gps}`;
   document.getElementById('photoLightbox').classList.add('open');
 }
@@ -729,7 +775,7 @@ function destinationPhotos(d){ return getRelatedPhotos(d); }
 // Strict, exact-destination-only photo resolver. No trip-wide fallback is permitted.
 function strictDestinationPhotos(d){
   const out=[], seen=new Set();
-  const add=(src,p={})=>{ if(!src||seen.has(src))return; seen.add(src); out.push({src,place:d.name,country:d.country,date:p.date||d.date||'',trip:(tripForDestination(d)?.name||d.note||d.name),gps:p.gps||((Number.isFinite(d.lat)&&Number.isFinite(d.lng))?[d.lat,d.lng]:null)}); };
+  const add=(src,p={})=>{ if(!src||seen.has(src))return; seen.add(src); out.push({src,place:d.name,country:d.country,date:p.date||d.date||'',trip:(tripForDestination(d)?.name||d.note||d.name),gps:p.gps||null}); };
   (Array.isArray(d.photos)?d.photos:[]).forEach(p=>add(p?.src,p||{}));
   add(d.photo||'',d.photoMetadata||{});
   if(d.addedTripId){ const t=loadAddedTrips().find(x=>x.id===d.addedTripId); (t?.photos||[]).forEach(p=>add(p.data,{date:p.date||d.date,gps:p.gps})); }
@@ -769,13 +815,17 @@ function renderDestinationCard(d){
 function openActiveDestinationMap(){
   const d=activeDestination;
   if(!d||!Number.isFinite(d.lat)||!Number.isFinite(d.lng))return;
-  openDetailedMap(d);
+  const photo=activePhotoGallery[activePhotoIndex];
+  const photoLat=Number(photo?.gps?.[0]),photoLng=Number(photo?.gps?.[1]);
+  const hasPhotoGps=Number.isFinite(photoLat)&&Number.isFinite(photoLng)&&Math.abs(photoLat)<=90&&Math.abs(photoLng)<=180;
+  openDetailedMap(d,hasPhotoGps?[photoLat,photoLng]:[d.lat,d.lng]);
 }
 function exploreMap(name,country,year){
   const d=findPlaceKey(name,country,year);
   if(d) openDetailedMap(d);
 }
-function openDetailedMap(d){
+function openDetailedMap(d,coordinates=[d.lat,d.lng]){
+  const [latitude,longitude]=coordinates;
   activeDestination=d;
   if(globe) globe.controls().autoRotate=false;
   const stage=document.getElementById('detailMapStage');
@@ -788,14 +838,14 @@ function openDetailedMap(d){
     try{
       if(typeof L==='undefined') throw new Error('Detailed map library did not load');
       if(!map){
-        map=L.map('detailMap',{zoomControl:true,touchZoom:true,scrollWheelZoom:true,doubleClickZoom:true,dragging:true}).setView([d.lat,d.lng],14);
+        map=L.map('detailMap',{zoomControl:true,touchZoom:true,scrollWheelZoom:true,doubleClickZoom:true,dragging:true}).setView([latitude,longitude],14);
         const streets=L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',{maxZoom:19,attribution:'Tiles © Esri'});
         streets.addTo(map);
       }else{
-        map.setView([d.lat,d.lng],14,{animate:false});
+        map.setView([latitude,longitude],14,{animate:false});
       }
       if(marker) marker.remove();
-      marker=L.marker([d.lat,d.lng]).addTo(map).bindPopup(d.name).openPopup();
+      marker=L.marker([latitude,longitude]).addTo(map).bindPopup(d.name).openPopup();
       map.invalidateSize(true);
       setTimeout(()=>map.invalidateSize(true),300);
     }catch(err){

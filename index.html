@@ -1,4 +1,4 @@
-<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Photo Recovery 1 · Reconstructed Master — Ben's World</title>
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Birthday Globe Photo App</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <link rel="stylesheet" href="styles.css">
 
@@ -55,6 +55,20 @@
 
 <div class="modalback" id="recentBack"><div class="modal"><button class="modalx" aria-label="Close Recently added trips" title="Close" onclick="closeRecentTrips()">×</button><h2>🕘 Recently added trips</h2><div class="note">Trips added to Ben’s World during the past six months, newest first. Older trips remain in the globe; they simply leave this recent list.</div><div id="recentTripsList" class="list" style="display:block;margin-top:12px"></div><div class="modalactions"><button onclick="closeRecentTrips()">Close</button></div></div></div>
 <div class="modalback" id="editBack"><div class="modal"><button class="modalx" aria-label="Close Edit trip or destination" title="Close" onclick="closeEditRecords()">×</button><h2>✎ Edit a trip or destination</h2><div class="note">Edits update the same living data used by pushpins, countries, destinations and years. Previously documented destinations and newly added trips can both be edited.</div><div class="field"><label>Choose record</label><select id="editRecord" style="width:100%;border-radius:10px;padding:10px;background:#0c1a2d;color:#fff" onchange="loadEditRecord()"></select></div><div class="field"><label>Name</label><input id="editName"></div><div class="row"><div class="field"><label>Start / visit date</label><input id="editStart" placeholder="MM/DD/YY, MM/YYYY, or YYYY"><div class="note">Day is optional.</div></div><div class="field"><label>End date</label><input id="editEnd" placeholder="MM/DD/YY, MM/YYYY, or YYYY (optional)"></div></div><div class="field"><label>Destination / country</label><input id="editPlace" placeholder="e.g., Antigua, Guatemala"><div class="note">Changing this will re-locate the pushpin when a location match is found.</div></div><div class="field"><label>Country / territory name</label><input id="editCountry" placeholder="e.g., Guatemala"></div><div class="field"><label>Notes</label><textarea id="editNotes" rows="3"></textarea></div><div class="field"><label>Add / replace hero photo (optional)</label><input id="editPhoto" type="file" accept="image/*,.heic,.heif"></div><div class="savedmsg" id="editMsg"></div><div class="modalactions"><button class="danger" onclick="deleteSelectedRecord()">Delete</button><button onclick="closeEditRecords()">Cancel</button><button onclick="saveRecordEdit()">Save changes</button></div></div></div>
+
+<div class="modalback photoGpsBack" id="photoGpsBack">
+ <form class="modal photoGpsModal" id="photoGpsForm" onsubmit="submitPhotoGps(event)">
+  <h2>Add photo location</h2>
+  <div class="note" id="photoGpsPrompt">This photo has no GPS coordinates in its metadata. Add its location, or skip to continue without coordinates.</div>
+  <div class="row">
+   <div class="field"><label for="photoGpsLatitude">Latitude</label><input id="photoGpsLatitude" type="text" inputmode="decimal" autocomplete="off" placeholder="e.g. 37.7749" required></div>
+   <div class="field"><label for="photoGpsLongitude">Longitude</label><input id="photoGpsLongitude" type="text" inputmode="decimal" autocomplete="off" placeholder="e.g. -122.4194" required></div>
+  </div>
+  <div class="note">Enter decimal degrees. Latitude is −90 to 90; longitude is −180 to 180. These are saved as [latitude, longitude].</div>
+  <div class="savedmsg" id="photoGpsMessage" role="alert"></div>
+  <div class="modalactions"><button type="button" onclick="skipPhotoGps()">Skip</button><button type="submit">Save coordinates</button></div>
+ </form>
+</div>
 <div class="modalback" id="countriesBack"><div class="modal"><button class="modalx" aria-label="Close Countries and Territories" title="Close" onclick="closeCountriesTerritories()">×</button><h2>🌍 Countries & Territories</h2><div class="note">Ben’s cumulative lifetime registry. Countries and territories are grouped by continent and alphabetized within each continent. A confirmed place remains here even when dates, photos, or a mapped destination still need to be added.</div><div id="countryRegistryList" style="margin-top:12px"></div><div id="countryRegistryDetails" class="countrydetails" style="display:none"></div><div class="modalactions"><button onclick="closeCountriesTerritories()">Close</button></div></div></div>
 <div class="modalback" id="datesBack"><div class="modal"><button class="modalx" aria-label="Close Dates" title="Close" onclick="closeDates()">×</button><h2>📅 Dates</h2><div class="note">Documented travel years, with Ben’s trips and destinations nested under each year. Click a destination to open its trip/date information and explore that place on the detailed 2-D map.</div><div id="datesList" style="margin-top:12px"></div><div class="modalactions"><button onclick="closeDates()">Close</button></div></div></div>
 
