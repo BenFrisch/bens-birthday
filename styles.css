@@ -8,6 +8,7 @@
 .streetViewLink{display:inline-block;margin-top:5px;padding:6px 9px;border:1px solid #77b9ff;border-radius:8px;background:#145ea8;color:#fff;text-decoration:none;font-size:12px;font-weight:650}
 .streetViewLink:hover{background:#1d75ca}
 .countryPhotoAction{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:10px}.countryPhotoAction button{border-color:#6fb7ff}.countryPhotoAction span{font-size:12px;color:#ffd27a}.countryPhotoAction .deletePhotoButton{border-color:#ff8b8b;color:#ffd4d4}.photoDeleteConfirmation{display:flex;align-items:center;gap:8px;flex-wrap:wrap;width:100%;padding:9px;border:1px solid #ff8b8b55;border-radius:10px;background:#5a1d2733;font-size:12px}.photoDeleteConfirmation[hidden]{display:none}.photoDeleteConfirmation button:first-of-type{border-color:#ff8b8b;background:#5a1d27}
+.photoPeopleEditor{display:grid;gap:6px;margin-top:12px}.photoPeopleEditor label{font-size:12px;font-weight:700}.photoPeopleEditor textarea{box-sizing:border-box;width:100%;min-height:54px;resize:vertical;background:#0c1a2d;color:#fff;border:1px solid #ffffff33;border-radius:10px;padding:9px;font:inherit}.photoPeopleEditor button{justify-self:start}.photoPeopleEditor [role=status]{font-size:12px;color:#ffd27a}
 .photoGpsBack{z-index:5000}
 .photoGpsModal input{box-sizing:border-box;width:100%;padding:10px;border:1px solid #ffffff33;border-radius:10px;background:#0c1a2d;color:#fff}
 .photoRow{display:flex;align-items:center;gap:10px}

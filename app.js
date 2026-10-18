@@ -13,6 +13,7 @@ function enterBensWorld(){
 
 const PHOTO_BUCKET='family-photos';
 const FAMILY_STATE_TABLE='family_app_state';
+const PHOTO_METADATA_TABLE='family_photo_metadata';
 const COUNTRY_KEY='bensWorldCountryRegistry';
 const TRIP_KEY='bensWorldAddedTripsV2';
 const OVERRIDE_KEY='bensWorldBaseOverridesV1';
@@ -81,6 +82,44 @@ function withoutDeletedPhotoReferences(value,copies=new WeakMap()){
     });
   }
   return copy;
+}
+
+function photoMetadataRow(path,attributes={}){
+  const latitude=Number(attributes.gps?.[0]),longitude=Number(attributes.gps?.[1]);
+  const hasGps=Number.isFinite(latitude)&&Number.isFinite(longitude)
+    &&Math.abs(latitude)<=90&&Math.abs(longitude)<=180;
+  const text=value=>String(value??'').trim()||null;
+  const year=text(attributes.year);
+  return {
+    storage_path:path,
+    gps_latitude:hasGps?latitude:null,
+    gps_longitude:hasGps?longitude:null,
+    city:text(attributes.city),
+    country:text(attributes.country),
+    trip:text(attributes.trip),
+    year:year==='0'?null:year,
+    notes:text(attributes.notes),
+    people:Array.isArray(attributes.people)?normalizePhotoPeople(attributes.people):null,
+    owner:attributes.owner??familyUser?.id??null,
+    updated_at:new Date().toISOString()
+  };
+}
+
+function normalizePhotoPeople(values){
+  const names=[],seen=new Set();
+  (Array.isArray(values)?values:[]).forEach(value=>{
+    const name=String(value??'').trim(),key=name.toLocaleLowerCase();
+    if(name&&!seen.has(key)){seen.add(key);names.push(name)}
+  });
+  return names;
+}
+
+async function savePhotoMetadata(path,attributes={}){
+  if(!path)return;
+  const {error}=await supabaseClient.from(PHOTO_METADATA_TABLE).upsert(
+    photoMetadataRow(path,attributes),{onConflict:'storage_path'}
+  );
+  if(error)throw new Error(`Could not save photo metadata: ${error.message}`);
 }
 
 function mapNestedValues(value,mapLeaf){
@@ -203,7 +242,7 @@ function submitPhotoGps(event){
 
 function skipPhotoGps(){finishPhotoGps(null)}
 
-async function uploadWebp(blob,filename){
+async function uploadWebp(blob,filename,attributes={}){
   if(!familyUser)throw new Error('Sign in before uploading photos.');
   const path=`${familyUser.id}/${crypto.randomUUID()}.webp`;
   const {error:uploadError}=await supabaseClient.storage.from(PHOTO_BUCKET).upload(path,blob,{
@@ -218,14 +257,23 @@ async function uploadWebp(blob,filename){
   }
   signedPhotoPaths.set(data.signedUrl,path);
   signedPhotoUrls.set(path,data.signedUrl);
+  try{
+    await savePhotoMetadata(path,{...attributes,owner:familyUser.id});
+  }catch(error){
+    const {error:cleanupError}=await supabaseClient.storage.from(PHOTO_BUCKET).remove([path]);
+    signedPhotoPaths.delete(data.signedUrl);
+    signedPhotoUrls.delete(path);
+    if(cleanupError)throw new Error(`${error.message} The uploaded photo could not be cleaned up (${cleanupError.message}).`);
+    throw error;
+  }
   return {path,url:data.signedUrl,name:filename};
 }
 
-async function processAndUploadPhoto(file){
+async function processAndUploadPhoto(file,attributes={}){
   const metadata=await readPhotoMetadata(file);
   const gps=metadata.gps||await requestPhotoGps(file.name);
   const webp=await createWebp(file);
-  const uploaded=await uploadWebp(webp,file.name);
+  const uploaded=await uploadWebp(webp,file.name,{...attributes,gps});
   return {name:file.name,data:uploaded.url,storagePath:uploaded.path,date:metadata.date||'',gps};
 }
 
@@ -307,6 +355,7 @@ async function persistCloudState(){
   },{onConflict:'id'});
   if(error)throw new Error(`Could not sync changes to Supabase: ${error.message}`);
   writeLocalState(await hydrateCloudState(cloudState));
+  await syncPhotoMetadata();
   setCloudStatus('All changes synced');
 }
 
@@ -377,11 +426,12 @@ async function startFamilySession(user){
     }
     await refreshBundledPhotoUrls();
     cloudReady=true;
-    cloudBootedUserId=user.id;
     cloudStartingUserId='';
-    setSignedInView(true);
     renderAddedTrips();
     rebuildMaster();
+    await syncPhotoMetadata(true);
+    cloudBootedUserId=user.id;
+    setSignedInView(true);
     setCloudStatus('Family album synced');
     document.getElementById('migratePhotosButton').hidden=[...bundledPhotoPaths()].every(path=>cloudAssetMappings[path]);
     cloudChannel=supabaseClient.channel('family-album-state').on('postgres_changes',{
@@ -457,12 +507,14 @@ async function migrateBundledPhotos(){
         contentType:'image/webp',cacheControl:'3600',upsert:true
       });
       if(error)throw new Error(`Could not move ${assetPath}: ${error.message}`);
+      await savePhotoMetadata(path,{owner:familyUser.id});
       completed[assetPath]=path;
     }
     cloudAssetMappings=completed;
     await flushCloudState();
     await refreshBundledPhotoUrls();
     rebuildMaster();
+    await syncPhotoMetadata(true);
     button.hidden=true;
     setCloudStatus(`Moved ${pending.length} built-in photos to private storage`);
   }catch(error){
@@ -688,7 +740,7 @@ function tripForDestination(d){
   const n=String(d.name||'').toLowerCase();
   return groups.find(g=>(g.destinations||[]).some(x=>{const q=String(x).toLowerCase();return n===q||n.includes(q)||q.includes(n)}))||null;
 }
-let activePhotoGallery=[];let activePhotoIndex=0;let activeDestination=null;
+let activePhotoGallery=[];let activePhotoIndex=0;let activeDestination=null;let photoPeopleRequest=0;
 
 // ===== BIRTHDAY PRIMARY PHOTO RECOVERY PASS 1 =====
 const PRIMARY_RECOVERED_PHOTOS = {"Lisbon": [{"src":"assets/images/c2d7d3ad5d2753d6f3e3a1c7f426e3a9fab856c486ffad4a296b9fdeb0f6730b.jpg","date":"2023","source":"Ginny-confirmed Ben Lisbon 2023 upload","filename":"IMG_8968.JPG"},{"src":"assets/images/f7b8c1c8c2b9cf8feedd62c7b318eb86a9a8dadca0fcede504f2871593be8580.jpg","date":"2023","source":"Ginny-confirmed Ben Lisbon 2023 upload","filename":"IMG_8988.JPG"},{"src":"assets/images/af580efc004b77f3fb6087549e42fbf66db407bdec3811c5d8e13d9b23af69ca.jpg","date":"2023","source":"Ginny-confirmed Ben Lisbon 2023 upload","filename":"IMG_8974(3).JPG"},{"src":"assets/images/e99b48893a4da9dea6471c79123fd10bf99a5463fa1c27c86d8779d88807083e.jpg","date":"2023","source":"Ginny-confirmed Ben Lisbon 2023 upload","filename":"IMG_8971.JPG"},{"src":"assets/images/8d460ce4e8b446251c7de5fd6fd7351370391676afd8a7c5c4c5d86688518410.jpg","date":"2023","source":"Ginny-confirmed Ben Lisbon 2023 upload","filename":"IMG_8966.JPG"},{"src":"assets/images/cb7d1780817fe1a3791d0d3518c8a8082cb40cd3e5e157c194daa320ee367840.jpg","date":"2023","source":"Ginny-confirmed Ben Lisbon 2023 upload","filename":"IMG_8950.JPG"},{"src":"assets/images/e8225d77993be27026b2beb108630722c943f253ddc839db9952bf6ec825bca3.jpg","date":"2023","source":"Ginny-confirmed Ben Lisbon 2023 upload","filename":"IMG_8949.JPG"},{"src":"assets/images/5ee916b6939cb7415ff27abbde131e55adb329c48280519e60f5356d99e45891.jpg","date":"2023","source":"Ginny-confirmed Ben Lisbon 2023 upload","filename":"IMG_8945.JPG"},{"src":"assets/images/8c2ecd029112e5f8bae49630f5edf8a76af53811b6e43a2489dbab58b1efe6ab.jpg","date":"2023","source":"Ginny-confirmed Ben Lisbon 2023 upload","filename":"IMG_8948.JPG"},{"src":"assets/images/ceeb3911a34e98ad7a950f1ad943fb78bbf86bc09fe35e1259e4b5f96a74f1ba.jpg","date":"2023","source":"Ginny-confirmed Ben Lisbon 2023 upload","filename":"IMG_8946.jpg"}], "Ha Long Bay": [{"src": "assets/images/2a6dcdb93569bf40564f220fa17f3b59b880afacc2f228c407cd6dbcf28d2ee7.jpg", "date": "20230722"}, {"src": "assets/images/1959e7a60ca8d79740416e4d3f5df9272a6d7d0ee2573b8ba0a1e788a6e3d2a2.jpg", "date": "20230722"}], "Ninh Binh": [{"src": "assets/images/67549219cf1bdff146a6e3680ef5abe95c5c959ed57ec11791653fe396e70a5b.jpg", "date": "20230724"}], "Wulai": [{"src": "assets/images/37c802bceb9562cf57fc3d9a8d754f129a1c0dd1cae9a43f8804e7f02e0b3d83.jpg", "date": "20230728"}], "Taipei": [{"src": "assets/images/24adb3c9012a02f2b460f7e7246ea7a4a9e31b6532750fa49211cad91e5d1c31.jpg", "date": "20230728"}], "Big Island, Hawaiʻi": [{"src": "assets/images/4e8159cb009abdaef417f4e6f6350735580f875feed254faa4936f52e7621202.jpg", "date": "20240122"}], "Maui": [{"src": "assets/images/7ef0c0b726ef97388dedb13c910d94828cec07b6d6cb7634545ebe0d1c448669.jpg", "date": "20241222"}], "Yosemite": [{"src": "assets/images/809f088b3aa832ced768fa040618086e35f60d2decb419491f1c06e54fb2a1f4.jpg", "date": "20250725"}], "Hanoi": [{"src": "assets/images/69cb9ed67e77d138c439e8bfa05acec7554869e97cafa119be03b836584c56ab.jpg", "date": "20230723"}]};
@@ -740,6 +792,7 @@ function setDestinationPhoto(i){
 function stepDestinationPhoto(n){setDestinationPhoto(activePhotoIndex+n)}
 function openPhotoLightbox(index){
   if(!activePhotoGallery.length)return;activePhotoIndex=Math.max(0,Math.min(index,activePhotoGallery.length-1));
+  const request=++photoPeopleRequest;
   const p=activePhotoGallery[activePhotoIndex];document.getElementById('photoLightboxImg').src=p.src;
   const latitude=Number(p.gps?.[0]),longitude=Number(p.gps?.[1]);
   const hasGps=Number.isFinite(latitude)&&Number.isFinite(longitude)&&Math.abs(latitude)<=90&&Math.abs(longitude)<=180;
@@ -749,8 +802,52 @@ function openPhotoLightbox(index){
   const country=activeDestination?.country||p.country||'';
   const deleteDisabled=photoStoragePath(p.src)?'':' disabled title="Only private family-album photos can be deleted here."';
   const countryAction=country?`<div class="countryPhotoAction"><button type="button" onclick="setCountryDefaultPhoto(${activePhotoIndex})">Set as ${escHtml(country)} default photo</button><button type="button" class="deletePhotoButton" onclick="showPhotoDeleteConfirmation(${activePhotoIndex})"${deleteDisabled}>Delete photo</button><span id="countryPhotoSaveStatus" role="status" aria-live="polite"></span><div id="photoDeleteConfirmation" class="photoDeleteConfirmation" hidden><span>Are you sure? This permanently deletes the photo from the family album.</span><button type="button" onclick="deleteSelectedPhoto(${activePhotoIndex})">Yes</button><button type="button" onclick="cancelPhotoDelete()">Cancel</button></div></div>`:'';
-  document.getElementById('photoLightboxMeta').innerHTML=`<b>${escHtml(p.place)}</b> <span class="badge">${activePhotoIndex+1} / ${activePhotoGallery.length}</span><div>${escHtml(p.country||'')}${p.date?' · '+escHtml(p.date):''}</div>${p.trip?`<div class="note">Trip: ${escHtml(p.trip)}</div>`:''}${gps}${countryAction}`;
+  const peopleEditor=photoStoragePath(p.src)?`<div class="photoPeopleEditor"><label for="photoPeopleInput">People in this photo</label><textarea id="photoPeopleInput" rows="2" placeholder="Enter one name per line">${escHtml((p.people||[]).join('\n'))}</textarea><div class="note">Enter one name per line. Names are stored with this photo.</div><button type="button" onclick="savePhotoPeople(${activePhotoIndex})">Save people</button><span id="photoPeopleStatus" role="status" aria-live="polite"></span></div>`:'';
+  document.getElementById('photoLightboxMeta').innerHTML=`<b>${escHtml(p.place)}</b> <span class="badge">${activePhotoIndex+1} / ${activePhotoGallery.length}</span><div>${escHtml(p.country||'')}${p.date?' · '+escHtml(p.date):''}</div>${p.trip?`<div class="note">Trip: ${escHtml(p.trip)}</div>`:''}${gps}${peopleEditor}${countryAction}`;
   document.getElementById('photoLightbox').classList.add('open');
+  if(photoStoragePath(p.src)&&cloudReady)loadPhotoPeople(index,photoStoragePath(p.src),request);
+}
+async function loadPhotoPeople(index,path,request){
+  const status=document.getElementById('photoPeopleStatus');
+  if(status)status.textContent='Loading tags…';
+  const {data,error}=await supabaseClient.from(PHOTO_METADATA_TABLE).select('people').eq('storage_path',path).maybeSingle();
+  if(error){
+    if(request===photoPeopleRequest&&status)status.textContent=`Could not load people tags: ${error.message}`;
+    return;
+  }
+  if(request!==photoPeopleRequest||photoStoragePath(activePhotoGallery[activePhotoIndex]?.src)!==path)return;
+  const people=normalizePhotoPeople(data?.people||[]);
+  activePhotoGallery[index].people=people;
+  const input=document.getElementById('photoPeopleInput');
+  if(input)input.value=people.join('\n');
+  if(status)status.textContent='';
+}
+async function savePhotoPeople(index){
+  const photo=activePhotoGallery[index],path=photo?photoStoragePath(photo.src):'';
+  const input=document.getElementById('photoPeopleInput');
+  const status=document.getElementById('photoPeopleStatus');
+  const button=document.querySelector('.photoPeopleEditor button');
+  if(!path||!input||!status||!button)return;
+  if(!cloudReady||!familyUser){
+    status.textContent='Connect to the family album before saving people tags.';
+    return;
+  }
+  const people=normalizePhotoPeople(input.value.split(/\r?\n/));
+  button.disabled=true;
+  status.textContent='Saving tags…';
+  try{
+    const {data,error}=await supabaseClient.from(PHOTO_METADATA_TABLE)
+      .update({people:people.length?people:null,updated_at:new Date().toISOString()})
+      .eq('storage_path',path).select('storage_path').maybeSingle();
+    if(error)throw new Error(error.message);
+    if(!data)throw new Error('No metadata row exists for this photo. Sign in again to sync the photo metadata, then retry.');
+    photo.people=people;
+    status.textContent=people.length?`Saved ${people.length} name${people.length===1?'':'s'}.`:'People tags cleared.';
+  }catch(error){
+    status.textContent=`Could not save people tags: ${error.message}`;
+  }finally{
+    button.disabled=false;
+  }
 }
 function showPhotoDeleteConfirmation(){
   const confirmation=document.getElementById('photoDeleteConfirmation');
@@ -778,16 +875,33 @@ async function deleteSelectedPhoto(index){
   status.textContent='Removing photo references…';
   deletedPhotoPaths.add(path);
   writeLocalState(withoutDeletedPhotoReferences({...previous,deletedPhotoPaths:[...deletedPhotoPaths]}));
+  let previousMetadata=null,metadataDeleted=false;
   try{
     await flushCloudState();
+    const {data:metadata,error:metadataReadError}=await supabaseClient.from(PHOTO_METADATA_TABLE)
+      .select('*').eq('storage_path',path).maybeSingle();
+    if(metadataReadError)throw new Error(`Could not check photo metadata before deletion: ${metadataReadError.message}`);
+    previousMetadata=metadata;
+    const {error:metadataDeleteError}=await supabaseClient.from(PHOTO_METADATA_TABLE)
+      .delete().eq('storage_path',path);
+    if(metadataDeleteError)throw new Error(`Could not delete photo metadata: ${metadataDeleteError.message}`);
+    metadataDeleted=Boolean(previousMetadata);
     status.textContent='Deleting photo from private storage…';
     const {error}=await supabaseClient.storage.from(PHOTO_BUCKET).remove([path]);
     if(error)throw new Error(error.message);
   }catch(error){
+    let metadataRestoreError=null;
+    if(metadataDeleted&&previousMetadata){
+      const {error}=await supabaseClient.from(PHOTO_METADATA_TABLE)
+        .upsert(previousMetadata,{onConflict:'storage_path'});
+      metadataRestoreError=error;
+    }
     writeLocalState(previous);
     try{
       await flushCloudState();
-      status.textContent=`Photo was not deleted. Changes were restored. ${error.message}`;
+      status.textContent=metadataRestoreError
+        ?`Photo deletion failed (${error.message}); album references were restored, but photo metadata could not be restored (${metadataRestoreError.message}).`
+        :`Photo was not deleted. Changes were restored. ${error.message}`;
     }catch(rollbackError){
       status.textContent=`Deletion failed (${error.message}), and restoring the album state also failed (${rollbackError.message}). Reload and check the family album before trying again.`;
     }
@@ -934,6 +1048,87 @@ function countryDefaultPhoto(country,photos=photosForCountry(country)){
     if(savedPath)return photoStoragePath(photo.src)===savedPath;
     return false;
   })||null;
+}
+async function syncPhotoMetadata(includeUnreferenced=false){
+  const rowsByPath=new Map();
+  const add=(photo,attributes)=>{
+    const reference=typeof photo==='string'?photo:photo?.data||photo?.src;
+    const path=photoStoragePath(reference);
+    if(!path||deletedPhotoPaths.has(path))return;
+    const photoAttributes={
+      ...attributes,
+      gps:Array.isArray(photo?.gps)?photo.gps:attributes.gps,
+      people:Array.isArray(photo?.people)?photo.people:attributes.people,
+      owner:familyUser?.id??null
+    };
+    const row=photoMetadataRow(path,photoAttributes);
+    const existing=rowsByPath.get(path);
+    if(existing){
+      Object.keys(row).forEach(key=>{
+        if((existing[key]===null||existing[key]===undefined)&&row[key]!==null&&row[key]!==undefined)
+          existing[key]=row[key];
+      });
+    }else rowsByPath.set(path,row);
+  };
+  for(const destination of ALL){
+    const addedTrip=destination.addedTripId
+      ?loadAddedTrips().find(trip=>trip.id===destination.addedTripId):null;
+    const attributes={
+      city:destination.name,
+      country:destination.country,
+      trip:addedTrip?.name||tripForDestination(destination)?.name,
+      year:destination.year,
+      notes:destination.note
+    };
+    (destination.photos||[]).forEach(photo=>add(photo,attributes));
+    if(destination.photo)add({src:destination.photo,...(destination.photoMetadata||{})},attributes);
+  }
+  for(const trip of loadAddedTrips()){
+    const attributes={
+      city:trip.city,
+      country:trip.country,
+      trip:trip.name,
+      year:trip.year||yearFromDate(trip.start),
+      notes:trip.notes
+    };
+    (trip.photos||[]).forEach(photo=>add(photo,attributes));
+  }
+  if(includeUnreferenced&&familyUser){
+    const folders=[familyUser.id];
+    while(folders.length){
+      const folder=folders.pop();
+      for(let offset=0;;offset+=100){
+        const {data,error}=await supabaseClient.storage.from(PHOTO_BUCKET)
+          .list(folder,{limit:100,offset});
+        if(error)throw new Error(`Could not list stored photos for metadata sync: ${error.message}`);
+        for(const entry of data||[]){
+          if(entry.id===null){
+            folders.push(`${folder}/${entry.name}`);
+            continue;
+          }
+          const path=`${folder}/${entry.name}`;
+          if(!rowsByPath.has(path))rowsByPath.set(path,photoMetadataRow(path,{owner:familyUser.id}));
+        }
+        if(!data||data.length<100)break;
+      }
+    }
+  }
+  const rows=[...rowsByPath.values()];
+  for(let index=0;index<rows.length;index+=500){
+    const batch=rows.slice(index,index+500);
+    const {data,error}=await supabaseClient.from(PHOTO_METADATA_TABLE)
+      .select('storage_path,people').in('storage_path',batch.map(row=>row.storage_path));
+    if(error)throw new Error(`Could not preserve people tags while syncing photo metadata: ${error.message}`);
+    for(const existing of data||[]){
+      const row=rowsByPath.get(existing.storage_path);
+      if(row)row.people=existing.people;
+    }
+  }
+  for(let index=0;index<rows.length;index+=500){
+    const {error}=await supabaseClient.from(PHOTO_METADATA_TABLE)
+      .upsert(rows.slice(index,index+500),{onConflict:'storage_path'});
+    if(error)throw new Error(`Could not sync photo metadata: ${error.message}`);
+  }
 }
 function countryPhotoThumbnailHtml(country){
   const photos=photosForCountry(country);
@@ -1106,7 +1301,13 @@ async function saveTrip(continueEditing=false){
   try{
     for(const file of files.slice(0,12)){
       msg.textContent=`Preparing photo ${photos.length+1} of ${Math.min(files.length,12)}…`;
-      photos.push(await processAndUploadPhoto(file));
+      photos.push(await processAndUploadPhoto(file,{
+        city:place.split(',')[0].trim(),
+        country:countryFromPlace(place),
+        trip:name,
+        year:yearFromDate(start),
+        notes
+      }));
     }
   }catch(error){
     msg.textContent=error.message;
@@ -1183,7 +1384,13 @@ async function saveRecordEdit(){
   let photo=null;
   const file=editPhoto.files[0];
   if(file){
-    try{photo=await processAndUploadPhoto(file)}
+    try{photo=await processAndUploadPhoto(file,{
+      city:place.split(',')[0].trim(),
+      country,
+      trip:name,
+      year:yearFromDate(start),
+      notes
+    })}
     catch(error){editMsg.textContent=error.message;return}
   }
   if(x.kind==='trip'){

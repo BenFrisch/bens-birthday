@@ -30,6 +30,71 @@ create policy "Signed-in family can update shared app state"
   using (id = 'shared')
   with check (id = 'shared' and updated_by = auth.uid());
 
+create table if not exists public.family_photo_metadata (
+  storage_path text primary key,
+  gps_latitude double precision,
+  gps_longitude double precision,
+  city text,
+  country text,
+  trip text,
+  year text,
+  notes text,
+  people text[],
+  owner uuid references auth.users(id),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  check (
+    (gps_latitude is null and gps_longitude is null)
+    or (
+      gps_latitude is not null
+      and gps_longitude is not null
+      and gps_latitude between -90 and 90
+      and gps_longitude between -180 and 180
+    )
+  )
+);
+
+alter table public.family_photo_metadata
+  add column if not exists people text[];
+
+create index if not exists family_photo_metadata_people_idx
+  on public.family_photo_metadata using gin (people);
+
+alter table public.family_photo_metadata enable row level security;
+
+drop policy if exists "Signed-in family can read own photo metadata" on public.family_photo_metadata;
+create policy "Signed-in family can read own photo metadata"
+  on public.family_photo_metadata for select
+  to authenticated
+  using ((storage.foldername(storage_path))[1] = auth.uid()::text);
+
+drop policy if exists "Signed-in family can create own photo metadata" on public.family_photo_metadata;
+create policy "Signed-in family can create own photo metadata"
+  on public.family_photo_metadata for insert
+  to authenticated
+  with check (
+    (storage.foldername(storage_path))[1] = auth.uid()::text
+    and (owner is null or owner = auth.uid())
+  );
+
+drop policy if exists "Signed-in family can update own photo metadata" on public.family_photo_metadata;
+create policy "Signed-in family can update own photo metadata"
+  on public.family_photo_metadata for update
+  to authenticated
+  using ((storage.foldername(storage_path))[1] = auth.uid()::text)
+  with check (
+    (storage.foldername(storage_path))[1] = auth.uid()::text
+    and (owner is null or owner = auth.uid())
+  );
+
+drop policy if exists "Signed-in family can delete own photo metadata" on public.family_photo_metadata;
+create policy "Signed-in family can delete own photo metadata"
+  on public.family_photo_metadata for delete
+  to authenticated
+  using ((storage.foldername(storage_path))[1] = auth.uid()::text);
+
+grant select, insert, update, delete on public.family_photo_metadata to authenticated;
+
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values ('family-photos', 'family-photos', false, 20971520, array['image/webp'])
 on conflict (id) do update
